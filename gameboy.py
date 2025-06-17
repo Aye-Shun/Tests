@@ -182,10 +182,12 @@ class CPU:
             return False
         return True
 
-    def run(self, max_cycles=10**6):
+    def run(self, max_cycles=10**6, controller=None):
         cycles = 0
         running = True
         while running and cycles < max_cycles:
+            if controller:
+                controller.poll()
             running = self.step()
             cycles += 1
 
@@ -195,19 +197,117 @@ def load_file(path):
         return f.read()
 
 
-def main(path):
+# Cross-platform single-key input
+try:
+    import msvcrt
+
+    def _get_key():
+        if msvcrt.kbhit():
+            ch = msvcrt.getch()
+            if ch == b'\r':
+                return '\r'
+            return ch.decode('utf-8')
+        return None
+except ImportError:  # Unix
+    import sys
+    import tty
+    import termios
+    import select
+
+    _fd = sys.stdin.fileno()
+    _old = termios.tcgetattr(_fd)
+    tty.setcbreak(_fd)
+
+    def _cleanup():
+        termios.tcsetattr(_fd, termios.TCSADRAIN, _old)
+
+    import atexit
+    atexit.register(_cleanup)
+
+    def _get_key():
+        dr, _, _ = select.select([sys.stdin], [], [], 0)
+        if dr:
+            return sys.stdin.read(1)
+        return None
+
+
+class Controller:
+    """Very small keyboard controller mapping to the joypad register."""
+
+    KEY_MAP = {
+        'a': 0x02,  # left
+        'd': 0x01,  # right
+        'w': 0x04,  # up
+        's': 0x08,  # down
+        'z': 0x10,  # A
+        'x': 0x20,  # B
+        ' ': 0x40,  # Select
+        '\r': 0x80,  # Start
+    }
+
+    INPUT_ADDR = 0xFF00
+
+    def __init__(self, cpu):
+        self.cpu = cpu
+
+    def poll(self):
+        value = 0
+        while True:
+            ch = _get_key()
+            if not ch:
+                break
+            bit = self.KEY_MAP.get(ch.lower())
+            if bit:
+                value |= bit
+        if value:
+            self.cpu.write_byte(self.INPUT_ADDR, value)
+        else:
+            self.cpu.write_byte(self.INPUT_ADDR, 0)
+
+
+import os
+
+
+def choose_rom():
+    """Prompt the user to pick a ROM from the roms/ folder or enter a path."""
+    rom_dir = os.path.join(os.path.dirname(__file__), 'roms')
+    files = []
+    try:
+        files = [f for f in os.listdir(rom_dir) if f.lower().endswith('.gb')]
+    except FileNotFoundError:
+        pass
+    if files:
+        print("Available ROMs:")
+        for i, name in enumerate(files, 1):
+            print(f" {i}. {name}")
+        choice = input("Select ROM by number or enter path: ").strip()
+        if choice.isdigit():
+            idx = int(choice) - 1
+            if 0 <= idx < len(files):
+                return os.path.join(rom_dir, files[idx])
+        if choice:
+            return choice
+    else:
+        path = input("Enter ROM path: ").strip()
+        return path
+
+
+def main(path=None):
+    if not path:
+        path = choose_rom()
     cpu = CPU()
     rom = load_file(path)
     cpu.load_rom(rom)
+    controller = Controller(cpu)
     try:
-        cpu.run()
+        cpu.run(controller=controller)
     except NotImplementedError as e:
         print(e)
 
 
 if __name__ == "__main__":
     import sys
-    if len(sys.argv) < 2:
-        print("Usage: python gameboy.py <rom_file>")
-    else:
+    if len(sys.argv) >= 2:
         main(sys.argv[1])
+    else:
+        main()
