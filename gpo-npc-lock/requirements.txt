@@ -1,0 +1,4 @@
+mss
+numpy
+opencv-python
+pyobjc-framework-Quartz; sys_platform == "darwin"
